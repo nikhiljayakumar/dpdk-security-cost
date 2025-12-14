@@ -1,0 +1,113 @@
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install build essentials
+sudo apt install -y build-essential git wget curl
+
+# Install QEMU and virtualization tools
+sudo apt install -y qemu-kvm qemu-system-x86 libvirt-daemon-system libvirt-clients bridge-utils virt-manager
+
+# Install DPDK dependencies
+sudo apt install -y python3-pyelftools libnuma-dev libpcap-dev meson ninja-build pkg-config
+
+# check if nested virtualization is enabled (should show 1)
+#If it shows "N", you need to enable it in your BIOS and potentially in Hyper-V settings on Windows.
+cat /sys/module/kvm_amd/parameters/nested
+
+# Create working directory
+mkdir ~/dpdk-project && cd ~/dpdk-project
+
+# Download DPDK (version 23.11 LTS recommended)
+wget https://fast.dpdk.org/rel/dpdk-23.11.tar.xz
+tar xf dpdk-23.11.tar.xz
+cd dpdk-23.11
+
+# Build DPDK
+meson setup build
+cd build
+ninja
+sudo ninja install
+sudo ldconfig
+
+# Configure Hugepages
+# Check current hugepages
+cat /proc/meminfo | grep Huge
+
+# Reserve hugepages (add to /etc/sysctl.conf for persistence)
+sudo sysctl -w vm.nr_hugepages=512
+
+# Mount hugepages
+sudo mkdir -p /mnt/huge
+sudo mount -t hugetlbfs pagesize=2MB /mnt/huge
+
+# Verify
+grep Huge /proc/meminfo
+
+# Create Ubuntu VM with QEMU
+cd ~/dpdk-project
+wget https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso
+qemu-img create -f qcow2 ubuntu-vm.qcow2 20G
+
+sudo qemu-system-x86_64 \
+  -enable-kvm \
+  -machine q35,kernel-irqchip=split \
+  -cpu host \
+  -m 4096 \
+  -smp 4 \
+  -drive file=ubuntu-vm.qcow2,format=qcow2,if=virtio \
+  -device intel-iommu,intremap=on \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -device virtio-net-pci,netdev=net0
+
+# some Connection Issue b/c I switched the virtual network device one time, every time server startup i think you have to do this
+sudo ip link set enp0s2 up
+sudo dhclient enp0s2
+
+# Install DPDK dependencies
+sudo apt update
+sudo apt install -y build-essential libnuma-dev libpcap-dev python3-pyelftools meson ninja-build
+
+# --- DO THIS INSIDE THE VM -----
+# Download and build DPDK
+wget https://fast.dpdk.org/rel/dpdk-23.11.tar.xz
+tar xf dpdk-23.11.tar.xz
+cd dpdk-23.11
+meson setup build
+cd build
+ninja
+sudo ninja install
+sudo ldconfig
+
+# Configure hugepages
+sudo sysctl -w vm.nr_hugepages=256
+sudo mkdir -p /mnt/huge
+sudo mount -t hugetlbfs pagesize=2MB /mnt/huge
+
+# Enable IOMMU in kernel (edit /etc/default/grub)
+sudo nano /etc/default/grub
+# Add: GRUB_CMDLINE_LINUX="intel_iommu=on iommu=pt"
+sudo update-grub
+sudo reboot
+
+# Bind the NIC to the DPDK Driver
+# Load VFIO module
+sudo modprobe vfio-pci
+
+# Find your NIC
+lspci | grep -i eth
+
+# Bind to VFIO (replace 00:03.0 with your device)
+cd ~/dpdk-23.11/usertools
+sudo ./dpdk-devbind.py --bind=vfio-pci 00:03.0
+
+# Verify
+sudo ./dpdk-devbind.py --status
+# --------------------------------------
+
+
+trying on the aws ec2 instances
+
+
+https://doc.dpdk.org/guides-20.11/nics/build_and_test.html#pmd-build-and-test
+https://doc.dpdk.org/guides-20.11/nics/ena.html # how this works on aws metal instances
+
